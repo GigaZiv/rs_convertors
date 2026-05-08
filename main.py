@@ -1,13 +1,13 @@
-import asyncio
-from datetime import  datetime
+from pprint import pprint
 
-import xml_gar, db
-from xml_prog import parseXmlMy, downloadD
-from zip_var_fias import extract_fias_contents
+
+from xml_prog import parse_rosreestr_xml_lang_records, parse_build_with_owners
 
 if __name__ == '__main__':
-    #parseXmlMy("report-457d4979-2776-4439-8e52-a1fd71bcd207-OfSite-2025-12-02-159910-45-01[0].xml")
+    pprint(parse_build_with_owners("F:\\Fias\\report-60baa8df-2923-4a2e-8ed7-38ce26b6affb-OfSite-2025-12-02-767077-45-01[0].xml"))
+
+    #pprint(parse_rosreestr_xml_lang_records("F:\\Fias\\report-66afd373-138d-4050-a345-8326cb251a79-OfSite-2025-12-03-662322-45-01[0].xml"))
 
     #extract_fias_contents('F:\\Fias\\gar_xml.zip')
 
-    asyncio.run(xml_gar.import_fias(clean_start=True))
+    #asyncio.run(xml_gar.import_fias(clean_start=True))

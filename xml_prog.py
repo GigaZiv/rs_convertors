@@ -1,276 +1,205 @@
-import random
-import string
 
-from pathlib import Path
-from functools import partial
-from io import DEFAULT_BUFFER_SIZE
-from pprint import pprint
-from types import NoneType
-from typing import Any
+import xml.etree.ElementTree as ET
+from typing import Any, Dict
 
 
-# def parseXml(chunkiness=8192):
-#     downloadD()
-
-def downloadD():
-    import urllib.request
-    from zipfile import ZipFile
-
-    # temp = tempfile.TemporaryFile()
-
-    # sslVer()
-
-    # with tempfile.TemporaryDirectory() as d:
-    #     temp_dir = d
-    #     file_Path = os.path.join(temp_dir, generate_temp_filename())
-    #     urllib.request.urlretrieve(url, file_Path)
-    #
-    #     with ZipFile(file_Path) as zObject:
-    #         zObject.extractall(temp_dir)
-    #
-    #     print(temp_dir)
-    #
-    # with ZipFile('C:\\456\\r.zip') as zObject:
-    #     for x in zObject.filelist:
-    #         if Path(x.filename).suffix.startswith(".xml"):
-    #             zObject.extract(x.filename, "C:\\456")
-    #             parseXmlMy(x.filename)
-
-
-
-
-def parseXmlMy(file: str):
-    import xml.etree.ElementTree as ET
-
-    tree = ET.parse("C:\\456\\"+file)
+def parse_build_with_owners(file_path):
+    tree = ET.parse(file_path)
     root = tree.getroot()
 
-    dict_our: dict[str, Any] = {}
+    def get_t(node, path, default=''):
+        if node is None: return default
+        found = node.find(path)
+        return found.text if found is not None and found.text else default
 
+    items = []
 
-# with open("output.csv", "w", newline="") as f:
+    # 1. Определяем типы объектов
+    record_tags = [".//land_record", ".//build_record", ".//room_record"]
 
-    organ_registr_rights = root.find("./details_statement/group_top_requisites/organ_registr_rights")
-    date_received_request = root.find("./details_request/date_received_request")
+    for tag in record_tags:
+        for record in root.findall(tag):
+            item_data = {
+                'cad_number': get_t(record, ".//common_data/cad_number"),
+                'quarter_cad_number': get_t(record, ".//common_data/quarter_cad_number"),
+                'area': get_t(record, ".//params/area"),
+                'floors': get_t(record, ".//params/floors"),
+                'purpose': get_t(record, ".//params/purpose/value"),
+                'year_built': get_t(record, ".//params/year_built"),
+                'cost': get_t(record, ".//cost/value"),
+                'owners': [],
+                'related_cad_numbers': [],
+                'extract_date': get_t(root, ".//date_formation") or get_t(root, ".//date_received_request"),
+            }
 
-    dict_our |= {
+            # Извлечение связанных кадастровых номеров (cad_links)
+            cad_links = record.find(".//cad_links")
+            if cad_links is not None:
+                for linked_num in cad_links.findall(".//cad_number"):
+                    if linked_num.text and linked_num.text not in item_data['related_cad_numbers']:
+                        item_data['related_cad_numbers'].append(linked_num.text)
+
+            # 2. Поиск прав (right_record)
+            rights = record.findall(".//right_record") or root.findall(".//right_record")
+
+            for right in rights:
+                right_type = get_t(right, ".//right_data/right_type/value")
+                reg_num = get_t(right, ".//registration/reg_number")
+
+                # 3. Извлечение собственников
+                holders = right.findall(".//right_holders/right_holder")
+                for holder in holders:
+                    name = ""
+                    # Физлицо
+                    surname = get_t(holder, ".//individual/surname")
+                    firstname = get_t(holder, ".//individual/name")
+                    patronymic = get_t(holder, ".//individual/patronymic")
+                    name = f"{surname} {firstname} {patronymic}".strip()
+
+                    # Юрлицо
+                    if not name:
+                        name = get_t(holder, ".//legal_entity/entity_common_data/name")
+
+                    # Муниципальная собственность
+                    if not name:
+                        name = get_t(holder, ".//public_formation/public_formation_type/value")
+                        full_pub_name = get_t(holder, ".//public_formation/content")
+                        if full_pub_name:
+                            name = f"{name}: {full_pub_name}"
+
+                    if not name:
+                        name = "Сведения о собственнике отсутствуют (ограничено законом)"
+
+                    item_data['owners'].append({
+                        'name': name,
+                        'right_type': right_type,
+                        'reg_num': reg_num,
+                        'inn': get_t(holder, ".//inn")
+                    })
+
+            items.append(item_data)
+
+    return items
+
+def parse_rosreestr_xml_lang_records(file_path: str) -> Dict[str, Any]:
+    """
+    Парсит XML выписку Росреестра (Земельный участок)
+    Возвращает словарь, готовый для создания Django-моделей.
+    """
+    try:
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+    except Exception as e:
+        return f"Ошибка при чтении файла: {e}"
+
+    # Вспомогательная функция для безопасного извлечения текста
+    def get_t(node, path, default=''):
+        if node is None: return default
+        found = node.find(path)
+        return found.text if found is not None and found.text else default
+
+    # 1. Шапка документа
+    dict_our = {
         'head': {
-            'organ_registr_rights': organ_registr_rights.text,
-            'date_received_request': date_received_request.text
+            'organ_registr_rights': get_t(root, ".//details_statement/group_top_requisites/organ_registr_rights"),
+            'date_received_request': get_t(root, ".//details_request/date_received_request") or get_t(root,
+                                                                                                      ".//date_formation"),
+            'registration_number': get_t(root, ".//registration_number")
         },
         'items': []
     }
 
+    # 2. Ищем записи объектов (Участки, Здания, Сооружения, Помещения)
+    # Используем .//, так как в разных типах выписок вложенность отличается
+    object_nodes = root.findall(".//land_record") + \
+                   root.findall(".//build_record") + \
+                   root.findall(".//construction_record") + \
+                   root.findall(".//room_record")
 
-    for land_record in root.findall("./cadastral_blocks/cadastral_block/record_data/base_data/land_records/"):
+    for obj in object_nodes:
+        item = {
+            'cad_number': get_t(obj, ".//common_data/cad_number"),
+            'type_value': get_t(obj, ".//common_data/type/value") or "Объект недвижимости",
+            'category_value': get_t(obj, ".//category/type/value") or get_t(obj, ".//params/category/value"),
+            'permitted_use': get_t(obj, ".//permitted_use_established/by_document") or get_t(obj, ".//params/purpose"),
+            'address': get_t(obj, ".//address/readable_address") or get_t(obj,
+                                                                          ".//address_location/address/readable_address"),
+            'cost': get_t(obj, ".//cost/value"),
+            'area': get_t(obj, ".//params/area"),
+            'contours': [],
+            'rights': []
+        }
 
-        item: dict[str, Any] = {}
-
-        common_data_cad_number = land_record.find("./object/common_data/cad_number")
-        common_data_code =  land_record.find("./object/common_data/type/code")
-        common_data_value = land_record.find("./object/common_data/type/value")
-
-        category_code = land_record.find("./params/category/type/code")
-        category_value = land_record.find("./params/category/type/value")
-
-        permitted_use_by_document = land_record.find("./params/permitted_use/permitted_use_established/by_document")
-
-        address_fias_okato = land_record.find("./address_location/address/address_fias/level_settlement/okato")
-        address_fias_kladr = land_record.find("./address_location/address/address_fias/level_settlement/kladr")
-        address_fias_postal_code = land_record.find("./address_location/address/address_fias/level_settlement/postal_code")
-        address_readable_address = land_record.find("./address_location/address/readable_address")
-
-        cost_value = land_record.find("./cost/value")
-
-        contours_location_number_pp = land_record.find("./contours_location/contours/contour/number_pp")
-        contours_location_sk_id = land_record.find("./contours_location/contours/contour/entity_spatial/sk_id")
-
-        try:
-            item |= {
-                'common_data_cad_number': common_data_cad_number.text,
-                'common_data_code': common_data_code.text,
-                'common_data_value': common_data_value.text,
-                'category_code': category_code.text,
-                'category_value': category_value.text,
-                'permitted_use_by_document': permitted_use_by_document.text if permitted_use_by_document is not None else '',
-                'address_fias_okato': address_fias_okato.text,
-                'address_fias_kladr': address_fias_kladr.text if address_fias_kladr is not None else '',
-                'address_fias_postal_code': address_fias_postal_code.text if address_fias_postal_code is not None else '',
-                'address_readable_address': address_readable_address.text if address_readable_address is not None else '',
-                'cost_value': cost_value.text,
-                'contours_location_number_pp': contours_location_number_pp.text if contours_location_number_pp is not None else '',
-                'contours_location_sk_id': contours_location_sk_id.text if contours_location_sk_id is not None else '',
-                'contours_location_ordinates': []
+        # 3. Геометрия (Многоконтурные участки и здания)
+        # Ищем все контуры (в зданиях они могут быть в location/contours)
+        contour_nodes = obj.findall(".//contours/contour") or obj.findall(".//location/contours/contour")
+        for contour in contour_nodes:
+            contour_data = {
+                'number_pp': get_t(contour, "number_pp"),
+                'sk_id': get_t(contour, ".//sk_id") or get_t(contour, ".//entity_spatial/sk_id"),
+                'elements': []
             }
-        except NoneType:
-            pass
 
-        contours_location_ordinates = land_record.find("./contours_location/contours/contour/entity_spatial/spatials_elements/spatial_element/ordinates")
+            # В каждом контуре может быть несколько элементов (внешний контур и дырки)
+            spatial_elements = contour.findall(".//spatial_element") or contour.findall(
+                ".//entity_spatial/spatials_elements/spatial_element")
+            if not spatial_elements and contour.find(".//ordinate") is not None:
+                # Случай, когда ординаты идут сразу в контуре
+                spatial_elements = [contour]
 
-        if contours_location_ordinates is not None:
-            for ordinate in contours_location_ordinates.findall("./ordinate"):
-                dict_values: dict[str, Any] = {
-                    'x': ordinate.find("x").text,
-                    'y': ordinate.find("y").text,
-                    'ord_nmb': ordinate.find("ord_nmb").text if ordinate.find("ord_nmb") is not None else '',
-                    'num_geopoint':  ordinate.find("num_geopoint").text if ordinate.find("num_geopoint") is not None else '',
-                    'delta_geopoint': ordinate.find("delta_geopoint").text if ordinate.find("delta_geopoint") is not None else ''
-                }
+            for s_elem in spatial_elements:
+                ordinates = []
+                for ord_node in s_elem.findall(".//ordinate"):
+                    ordinates.append({
+                        'x': get_t(ord_node, "x"),
+                        'y': get_t(ord_node, "y"),
+                        'ord_nmb': get_t(ord_node, "ord_nmb")
+                    })
+                if ordinates:
+                    contour_data['elements'].append(ordinates)
 
-                item['contours_location_ordinates'].append(dict_values)
+            if contour_data['elements']:
+                item['contours'].append(contour_data)
+
+        # 4. Права собственности
+        # Ищем .//right_record по всему дереву объекта
+        # Если правообладателей несколько, будет несколько блоков или один со списком
+        right_records = obj.findall(".//right_record") or root.findall(".//right_record")
+
+        for rr in right_records:
+            # Важно: если в файле несколько объектов, проверяем связь (опционально)
+            # Для простоты считаем, что права относятся к текущему объекту
+            right_info = {
+                'right_type': get_t(rr, ".//right_data/right_type/value"),
+                'reg_number': get_t(rr, ".//registration/reg_number"),
+                'reg_date': get_t(rr, ".//registration/reg_date"),
+                'owners': []
+            }
+
+            for holder in rr.findall(".//right_holders/right_holder"):
+                # Собираем ФИО (Физики)
+                surname = get_t(holder, ".//individual/surname")
+                name = get_t(holder, ".//individual/name")
+                patronymic = get_t(holder, ".//individual/patronymic")
+                full_name = f"{surname} {name} {patronymic}".strip()
+
+                # Собираем Юрлица / Муниципалитеты
+                if not full_name:
+                    full_name = get_t(holder, ".//legal_entity/entity_common_data/name") or \
+                                get_t(holder, ".//public_formation/public_formation_type/value")
+
+                if not full_name:
+                    full_name = "Сведения отсутствуют (закон №266-ФЗ)"
+
+                right_info['owners'].append({
+                    'name': full_name,
+                    'inn': get_t(holder, ".//inn"),
+                    'share': get_t(rr, ".//right_data/shares/share/value_text")  # Доля
+                })
+
+            if right_info['owners']:
+                item['rights'].append(right_info)
 
         dict_our['items'].append(item)
 
-    pprint(dict_our)
-
-# def sslVer():
-#     import socket
-#     import ssl
-#
-#     hostname = 'www.google.com'
-#     context = ssl.create_default_context()
-#
-#     with socket.create_connection((hostname, 443)) as sock:
-#         with context.wrap_socket(sock, server_hostname=hostname) as ssock:
-#             print(ssock.version())
-#
-#
-#
-# def generate_temp_filename() -> str:
-#     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=20))
-#     # return os.path.join(tempfile.gettempdir(), random_string)
-#
-# def bytes_from_file(filename, chunksize=8192):
-#     with open(filename, "rb") as f:
-#         while True:
-#             chunk = f.read(chunksize)
-#             if chunk:
-#                 for b in chunk:
-#                     yield b
-#             else:
-#                 break
-#
-#
-# def file_byte_iterator(path):
-#     """given a path, return an iterator over the file
-#     that lazily loads the file
-#     """
-#     path = Path(path)
-#     with path.open('rb') as file:
-#         reader = partial(file.read1, DEFAULT_BUFFER_SIZE)
-#         file_iterator = iter(reader, bytes())
-#         for chunk in file_iterator:
-#             yield from chunk
-
-
-# Source - https://stackoverflow.com/a
-# Posted by Zubo, modified by community. See post 'Timeline' for change history
-# Retrieved 2025-12-03, License - CC BY-SA 4.0
-
-# import urllib.request
-# import shutil
-#
-# with urllib.request.urlopen("http://www.unece.org/fileadmin/DAM/cefact/locode/2015-2_UNLOCODE_SecretariatNotes.pdf") as response, open("downloaded_file.pdf", 'w') as out_file:
-#     shutil.copyfileobj(response, out_file)
-
-
-
-# import zipfile
-# import os
-# from pathlib import Path
-#
-# def extract(zip_path, target_path):
-#     block_size = 8192
-#     z = zipfile.ZipFile(zip_path)
-#     for entry_name in z.namelist():
-#         entry_info = z.getinfo(entry_name)
-#         i = z.open(entry_name)
-#         print(entry_name)
-#         if entry_name[-1] != '/':
-#             dir_name = os.path.dirname(entry_name)
-#             p = Path(f"{target_path}/{dir_name}")
-#             p.mkdir(parents=True, exist_ok=True)
-#             o = open(f"{target_path}/{entry_name}", 'wb')
-#             offset = 0
-#             while True:
-#                 b = i.read(block_size)
-#                 offset += len(b)
-#                 print(float(offset)/float(entry_info.file_size) * 100.)
-#                 if b == b'':
-#                     break
-#                 o.write(b)
-#             o.close()
-#         i.close()
-#     z.close()
-#
-# extract("test.zip", "test")
-
-#
-# import xml.etree.ElementTree as ET
-# import os
-# from typing import Any
-# from pprint import pprint
-#
-#
-# def get_element_text(parent: ET.Element, xpath: str, default: str = "") -> str:
-#     """Вспомогательная функция для безопасного получения текста из элемента."""
-#     element = parent.find(xpath)
-#     return element.text if element is not None and element.text is not None else default
-#
-#
-# def parse_xml_data(file_name: str, base_path: str = "C:\\456\\"):
-#     full_path = os.path.join(base_path, file_name)
-#     tree = ET.parse(full_path)
-#     root = tree.getroot()
-#
-#     result_data = {
-#         'head': {
-#             'organ_registr_rights': get_element_text(root,
-#                                                      "./details_statement/group_top_requisites/organ_registr_rights"),
-#             'date_received_request': get_element_text(root, "./details_request/date_received_request")
-#         },
-#         'items': []
-#     }
-#
-#     land_records_path = "./cadastral_blocks/cadastral_block/record_data/base_data/land_records/"
-#     for land_record in root.findall(land_records_path):
-#         item = {
-#             'common_data_cad_number': get_element_text(land_record, "./object/common_data/cad_number"),
-#             'common_data_code': get_element_text(land_record, "./object/common_data/type/code"),
-#             'common_data_value': get_element_text(land_record, "./object/common_data/type/value"),
-#             'category_code': get_element_text(land_record, "./params/category/type/code"),
-#             'category_value': get_element_text(land_record, "./params/category/type/value"),
-#             'permitted_use_by_document': get_element_text(land_record,
-#                                                           "./params/permitted_use/permitted_use_established/by_document"),
-#             'address_fias_okato': get_element_text(land_record,
-#                                                    "./address_location/address/address_fias/level_settlement/okato"),
-#             'address_fias_kladr': get_element_text(land_record,
-#                                                    "./address_location/address/address_fias/level_settlement/kladr"),
-#             'address_fias_postal_code': get_element_text(land_record,
-#                                                          "./address_location/address/address_fias/level_settlement/postal_code"),
-#             'address_readable_address': get_element_text(land_record, "./address_location/address/readable_address"),
-#             'cost_value': get_element_text(land_record, "./cost/value"),
-#             'contours_location_number_pp': get_element_text(land_record,
-#                                                             "./contours_location/contours/contour/number_pp"),
-#             'contours_location_sk_id': get_element_text(land_record,
-#                                                         "./contours_location/contours/contour/entity_spatial/sk_id"),
-#             'contours_location_ordinates': []
-#         }
-#
-#         ordinates_xpath = "./contours_location/contours/contour/entity_spatial/spatials_elements/spatial_element/ordinates"
-#         ordinates_element = land_record.find(ordinates_xpath)
-#
-#         if ordinates_element is not None:
-#             for ordinate in ordinates_element.findall("./ordinate"):
-#                 ordinate_data = {
-#                     'x': get_element_text(ordinate, "x"),
-#                     'y': get_element_text(ordinate, "y"),
-#                     'ord_nmb': get_element_text(ordinate, "ord_nmb"),
-#                     'num_geopoint': get_element_text(ordinate, "num_geopoint"),
-#                     'delta_geopoint': get_element_text(ordinate, "delta_geopoint")
-#                 }
-#                 item['contours_location_ordinates'].append(ordinate_data)
-#
-#         result_data['items'].append(item)
-#
-#     pprint(result_data)
+    return dict_our
