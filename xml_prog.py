@@ -173,7 +173,8 @@ def parse_rosreestr_xml_lang_records(file_path: str) -> Dict[str, Any]:
                 'right_type': get_t(rr, ".//right_data/right_type/value"),
                 'reg_number': get_t(rr, ".//registration/reg_number"),
                 'reg_date': get_t(rr, ".//registration/reg_date"),
-                'owners': []
+                'owners': [],
+                'underlying_documents': []
             }
 
             for holder in rr.findall(".//right_holders/right_holder"):
@@ -193,8 +194,33 @@ def parse_rosreestr_xml_lang_records(file_path: str) -> Dict[str, Any]:
 
                 right_info['owners'].append({
                     'name': full_name,
+                    'birth_date': get_t(holder, ".//birth_date"),
+                    'birth_place': get_t(holder, ".//birth_place"),
                     'inn': get_t(holder, ".//inn"),
-                    'share': get_t(rr, ".//right_data/shares/share/value_text")  # Доля
+                    'identity_doc' : {
+                        'code': get_t(holder, ".//identity_doc/document_code/code"),
+                        'value': get_t(holder, ".//identity_doc/document_code/value"),
+                        'document_name': get_t(holder, ".//document_name"),
+                        'document_series': get_t(holder, ".//document_series"),
+                        'document_number': get_t(holder, ".//document_number"),
+                        'document_date': get_t(holder, ".//document_date"),
+                        'document_issuer': get_t(holder, ".//document_issuer"),
+                    },
+                    'contacts': {
+                        'mailing_addess': get_t(holder, ".//individual/contacts/mailing_addess"),
+                    },
+                    'share': get_t(rr, ".//right_data/shares/share/value_text")
+                })
+
+            for underlying in rr.findall(".//underlying_documents/underlying_document"):
+                right_info['underlying_documents'].append({
+                    'underlying_document': {
+                        'code': get_t(underlying, './/code'),
+                        'value': get_t(underlying, './/value')
+                    },
+                    'document_name': get_t(underlying, './/document_name'),
+                    'document_number': get_t(underlying, './/document_number'),
+                    'document_date': get_t(underlying, './/document_date'),
                 })
 
             if right_info['owners']:
