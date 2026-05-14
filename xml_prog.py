@@ -16,7 +16,25 @@ def get_root_tag(file_path):
         context = ET.iterparse(file_path, events=('start',))
         _, elem = next(context)
         return elem.tag.split('}')[-1]
+
+    except FileNotFoundError:
+        print(f"Ошибка: Файл не найден по пути {file_path}")
+        return None
+
+    except (PermissionError, IsADirectoryError) as e:
+        print(f"Ошибка доступа к файлу: {e}")
+        return None
+
+    except StopIteration:
+        print("Ошибка: XML-файл абсолютно пустой")
+        return None
+
+    except (ET.ParseError, UnicodeDecodeError) as e:
+        print(f"Ошибка синтаксиса или кодировки XML: {e}")
+        return None
+
     except Exception as e:
+        print(f"Непредвиденная ошибка: {e}")
         return None
 
 def process_file(file_path):
@@ -32,7 +50,7 @@ def process_file(file_path):
 
     if tag in ALLOWED_TAGS:
         print(f"Обработка {os.path.basename(file_path)} (Тип: {tag})...")
-        data = parse_rosreestr_xml(file_path)
+        data = parse_rosreestr_xml(file_path, str(tag))
         return data
     else:
         print(f"Пропуск: Тип '{tag}' в файле {os.path.basename(file_path)} не поддерживается.")
